@@ -1,0 +1,273 @@
+* Utworzenie projektu
+	> cargo new --lib backtrace-rust
+	> tree backtrace-rust
+
+* Pocz¹tkowa zawartoœæ pliku Cargo.toml
+[package]
+name = "backtrace-rust"
+version = "0.1.0"
+authors = ["... <...>"]
+[lib]
+name = "backtrace_rust"
+[dependencies]
+
+* U¿ycie std::panic::set_hook
+
+fn main() {
+    std::panic::set_hook(Box::new(|panic_info|{
+        println!("My panic: {:?}", panic_info);
+    }));
+
+    panic!("Answer was not {}", 42);
+}
+
+Wynik dzia³ania:
+
+My panic: PanicInfo {
+    payload: Any,
+    message: Some(Answer was not 42),
+    location: Location {
+        file: "src/main.rs",
+        line: 6,
+        col: 5
+    }
+}
+
+* Implementacja backtrace_rust::register_error_handler
+
+pub fn register_error_handler<T>(
+    url: &str, token: &str, user_handler: T)
+where
+    T: 'static + Send + Sync +
+        Fn(&mut Report, &PanicInfo) -> (),
+{
+    let submission_target = SubmissionTarget {
+        token: String::from(token),
+        url: String::from(url),
+    };
+
+    std::panic::set_hook(Box::new(move |panic_info| {
+        sender::submit(
+            &submission_target,
+            panic_info,
+            &user_handler
+        );
+    }));
+}
+
+* Implementacja Submission target i Report
+
+use std::collections::HashMap;
+use std::panic::PanicInfo;
+
+#[derive(Debug, Clone)]
+pub struct SubmissionTarget {
+    token: String,
+    url: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Report {
+    pub annotations: HashMap<String, String>,
+    pub attributes: HashMap<String, String>,
+}
+
+* Uzykanie backtrace
+
+extern crate error_chain;
+//...
+let bt = error_chain::Backtrace::new();
+
+
+* Pobranie wersji jêzyka Rust
+
+extern crate rustc_version_runtime;
+// ...
+let version = rustc_version_runtime::version();
+let version = format!(
+    "{}.{}",
+    version.major,
+    version.minor
+);
+
+* Obecny timestamp
+
+use std::time;
+fn get_timestamp() -> u64 {
+    let now = time::SystemTime::now();
+    now.duration_since(
+        time::UNIX_EPOCH
+    ).unwrap().as_secs()
+}
+
+* Wywo³anie handlera u¿ytkownika
+
+let mut r = Report {
+    ..Default::default()
+};
+user_handler(&mut r, _p);
+
+* Generowanie UUiD
+
+extern crate uuid;
+// ...
+uuid::Uuid::new_v4().to_string()
+
+* Tworzenie obiektu JSON
+
+let
+ payload = json!({
+    "uuid": uuid::Uuid::new_v4().to_string(),
+    "timestamp": get_timestamp(),
+    "lang": "Rust",
+    "langVersion": version,
+    "agent": "backtrace-rust",
+    "agentVersion": "0.0.0",
+    "mainThread": "main",
+    "annotations": r.annotations,
+    "attributes": r.attributes,
+    "threads": {
+        "main": {
+            "name": "main",
+            "fault": true,
+            "stack": stack
+        }
+    }
+});
+
+* Wys³anie zapytania HTTP
+
+let url = format!(
+    "{}/api/post?format=json&token={}",
+    st.url,
+    st.token
+);
+
+let client = reqwest::Client::new();
+let resp = client
+    .post(&url)
+    .json(&payload)
+    .send();
+
+match resp {
+    Ok(x) => println!("{:?}", x),
+    Err(error) => println!("{:?}", error),
+}
+
+* Ca³y modu³ sender.rs
+
+extern crate error_chain;
+extern crate reqwest;
+extern crate rustc_version_runtime;
+extern crate serde_json;
+extern crate uuid;
+
+use std::collections::HashMap;
+use std::panic::PanicInfo;
+use std::time;
+use Report;
+use SubmissionTarget;
+
+pub fn submit<T>(
+    st: &SubmissionTarget,
+    _p: &PanicInfo,
+    user_handler: T)
+where
+    T: 'static + Send + Sync +
+        Fn(&mut Report, &PanicInfo) -> (),
+{
+    let bt = error_chain::Backtrace::new();
+    let version = rustc_version_runtime::version();
+    let version = format!(
+        "{}.{}",
+        version.major,
+        version.minor
+    );
+    let mut r = Report {
+        ..Default::default()
+    };
+    user_handler(&mut r, _p);
+    let mut stack = Vec::new();
+    for x in bt.frames() {
+        for y in x.symbols() {
+            let line = match y.lineno() {
+                Some(x) => x.to_string(),
+                None => String::new(),
+            };
+            let filename = match y.filename() {
+                Some(x) => String::from(match x.to_str() {
+                    Some(w) => w,
+                    None => "",
+                }),
+                None => String::new(),
+            };
+            let addr = match y.addr() {
+                Some(x) => format!("{:p}", x),
+                None => String::new(),
+            };
+            let name = match y.name() {
+                Some(x) => x.to_string(),
+                None => String::new(),
+            };
+            let mut elem = HashMap::new();
+            elem.insert(String::from("line"), line);
+            elem.insert(String::from("library"), filename);
+            elem.insert(String::from("address"), addr);
+            elem.insert(String::from("funcName"), name);
+            stack.push(elem);
+        }
+    }
+    let payload = json!({
+        "uuid": uuid::Uuid::new_v4().to_string(),
+        "timestamp": get_timestamp(),
+        "lang": "Rust",
+        "langVersion": version,
+        "agent": "backtrace-rust",
+        "agentVersion": "0.0.0",
+        "mainThread": "main",
+        "annotations": r.annotations,
+        "attributes": r.attributes,
+        "threads": {
+            "main": {
+                "name": "main",
+                "fault": true,
+                "stack": stack
+            }
+        }
+    });
+    let url = format!(
+        "{}/api/post?format=json&token={}",
+        st.url,
+        st.token
+    );
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&payload)
+        .send();
+    match resp {
+        Ok(x) => println!("{:?}", x),
+        Err(error) => println!("{:?}", error),
+    }
+}
+
+fn get_timestamp() -> u64 {
+    let now = time::SystemTime::now();
+    now.duration_since(
+        time::UNIX_EPOCH
+    ).unwrap().as_secs()
+}
+
+* Cargo.toml po implementacji
+[package]
+name = "backtrace-rust"
+version = "0.1.0"
+authors = ["... <...>"]
+[lib]
+name = "backtrace_rust"
+[dependencies]
+error-chain = "0.12"
+rustc_version_runtime = "0.1.3"
+serde_json = "1.0"
+uuid = { version = "0.7.0-beta", features = ["v4"] }
+reqwest = "0.8.8"
