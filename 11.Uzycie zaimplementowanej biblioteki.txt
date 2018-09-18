@@ -1,0 +1,46 @@
+* Utworzenie projektu
+> cargo new art
+> tree art
+
+* Dodanie zale¿noœci od backtrace-rust
+[package]
+name = "art-test"
+version = "0.1.0"
+authors = ["... <...>"]
+[dependencies]
+num_cpus = "1.0"
+backtrace-rust = { path = "../backtrace-rust" }
+
+* G³ówny plik programu testuj¹cego bibliotekê
+extern crate backtrace_rust;
+extern crate num_cpus;
+
+use backtrace_rust::Report;
+use std::panic::PanicInfo;
+
+fn main() {
+    backtrace_rust::register_error_handler(
+        "https://krzaq.sp.backtrace.io:6098",
+        "ad02f3f944c...2c2a17afb1c003",
+        |r: &mut Report, _| {
+            let cpus = num_cpus::get();
+            let cpus = cpus.to_string();
+
+            r.attributes.insert(
+                String::from("cpu.cores"),
+                cpus
+            );
+        },
+    );
+
+    println!("Hello, world!");
+    panic!("{:?}", 42);
+}
+
+* Uruchomienie programu testowego
+> cargo run
+
+
+
+
+
